@@ -1,0 +1,43 @@
+{
+  "name": "dsh-whale-pet",
+  "version": "0.2.0",
+  "description": "DSH 桌面鲸鱼娘：任务状态、一次性审批与静音完成提醒；客户端设置中可开关",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "desktop/main.cjs",
+    "desktop/preload.cjs",
+    "ui/index.html",
+    "ui/app.js",
+    "ui/styles.css",
+    "assets",
+    "scripts/install.ps1",
+    "scripts/demo.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "demo": "node scripts/demo.js",
+    "pack:check": "npm pack --dry-run"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ]
+    }
+  },
+  "license": "MIT"
+}
