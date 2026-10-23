@@ -3,9 +3,55 @@
 (() => {
   const $ = id => document.getElementById(id);
   const host = window.whale;
+  const setText = (element, value) => { if (element.textContent !== value) element.textContent = value; };
+  // Custom properties written only when they change: drag hints re-render up to 60 times a second.
+  const setVar = (element, name, value) => { value = String(value); if (element.style.getPropertyValue(name) !== value) element.style.setProperty(name, value); };
+  let edgeSide = null;
+  let edgeAttraction = null;
   const spriteNames = {idle:'idle',thinking:'thinking',working:'working',approval:'waiting_approval',question:'waiting_question',completed:'success',error:'error',aborted:'idle',disconnected:'offline'};
+  spriteNames['peek-left'] = 'peek-left'; spriteNames['peek-right'] = 'peek-left';
+  spriteNames['attracted-left'] = 'idle-look-left'; spriteNames['attracted-right'] = 'idle-look-right';
+  spriteNames['attracted-bottom'] = 'idle-look-down'; spriteNames.landing = 'idle-look-down';
   let spriteState = '', typingFrame = 0, typingTimer;
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+  let landingAnimation = null, landingTimer, landingActive = false;
+  function stopLanding() {
+    clearTimeout(landingTimer);
+    landingAnimation?.cancel(); landingAnimation = null; landingActive = false;
+    $('app').dataset.landing = '';
+  }
+  function land(payload) {
+    stopLanding();
+    const distance = Number(payload?.drop);
+    // Already touching the floor: no artificial hop, including display rounding.
+    if (!Number.isFinite(distance) || distance <= 2 || reducedMotion.matches || document.hidden || edgeSide || state.approvals.length || state.questions.length) {
+      render();
+      return;
+    }
+    edgeAttraction = null;
+    landingActive = true;
+    render();
+    const el = $('character');
+    const wrap = $('character-wrap');
+    const scale = wrap.getBoundingClientRect().height / wrap.offsetHeight || 1;
+    const drop = Math.min(160, distance) / scale;
+    // Constant acceleration from rest; farther drops take longer. No upward bounce.
+    const fallMs = Math.sqrt(2 * drop / 1800) * 1000;
+    const duration = fallMs + 150;
+    const frames = Array.from({length:13}, (_, i) => {
+      const t = i / 12;
+      return {transform:`translateY(${-drop * (1 - t*t)}px) scaleY(1)`, offset:t * fallMs / duration};
+    });
+    frames.push(
+      {transform:'translateY(0) scaleY(.985)',offset:(fallMs + 45) / duration,easing:'ease-out'},
+      {transform:'translateY(0) scaleY(1)',offset:1}
+    );
+    landingAnimation = el.animate(frames, {duration,fill:'both',easing:'linear'});
+    landingTimer = setTimeout(() => { stopLanding(); render(); }, duration);
+  }
+  document.addEventListener('visibilitychange', () => { if (document.hidden) { stopLanding(); render(); } });
+  reducedMotion.addEventListener('change', () => { stopLanding(); render(); });
+  window.addEventListener('unload', stopLanding);
   let blinkTimer, blinkEndTimer, blinking = false;
   const blinkFrame = new Image();
   blinkFrame.src = '../assets/winter/idle-blink.png';
@@ -25,9 +71,37 @@
     }, 3000 + Math.random() * 4000);
   }
   let idleTimer, idleEndTimer, lastIdleAction = -1;
+  // Briefly blend registered eating frames instead of snapping the whole sprite.
+  const previousFrame = $('character').cloneNode(false);
+  previousFrame.removeAttribute('id');
+  previousFrame.alt = ''; previousFrame.setAttribute('aria-hidden', 'true');
+  previousFrame.classList.add('character-transition'); previousFrame.hidden = true;
+  $('character').before(previousFrame);
+  let frameFade, frameFadeTimer;
+  function clearFrameFade() {
+    clearTimeout(frameFadeTimer); frameFade?.cancel(); frameFade = null;
+    previousFrame.hidden = true;
+  }
+  function paintIdleFrame(src, blend) {
+    clearFrameFade();
+    const character = $('character');
+    if (blend && character.src !== src && !reducedMotion.matches) {
+      previousFrame.src = character.src; previousFrame.hidden = false;
+      character.src = src;
+      frameFade = character.animate([{opacity: 0}, {opacity: 1}], {duration: 90, easing: 'ease-out'});
+      frameFadeTimer = setTimeout(clearFrameFade, 90);
+    } else character.src = src;
+  }
   const idleSequences = {
     look: [['idle-look-left', 850], ['idle', 180], ['idle-look-right', 1000], ['idle', 370]],
-    rice: [['idle-rice-reach', 800], ['idle-rice-hold', 650], ['idle-rice-eat', 650], ['idle-rice-hold', 450], ['idle-rice-eat', 650], ['idle-rice-hold', 450], ['idle-rice-eat', 650], ['idle-rice-hold', 650], ['idle-rice-reach', 450], ['idle', 250]],
+    rice: [
+      ['idle-rice-reach', 700], ['idle-rice-hold', 400],
+      ['idle-rice-scoop', 380], ['idle-rice-lift', 220], ['idle-rice-eat', 240],
+      ['idle-rice-chew', 650], ['idle-rice-satisfied', 330],
+      ['idle-rice-hold', 250], ['idle-rice-scoop', 320], ['idle-rice-lift', 200],
+      ['idle-rice-eat', 220], ['idle-rice-chew', 780], ['idle-rice-satisfied', 700],
+      ['idle-rice-hold', 350], ['idle', 400]
+    ],
     nod: [['idle', 2400]]
   };
   const idleFrames = new Map();
@@ -36,6 +110,7 @@
   }
   function stopIdleAction() {
     clearTimeout(idleTimer); clearTimeout(idleEndTimer);
+    clearFrameFade();
     if ($('character').dataset.idleAction) $('character').src = '../assets/winter/idle.png';
     delete $('character').dataset.idleAction;
   }
@@ -53,13 +128,13 @@
       const play = index => {
         if (index === frames.length) { scheduleIdleAction(); scheduleBlink(); return; }
         const [name, duration] = frames[index];
-        $('character').src = idleFrames.get(name).src;
+        paintIdleFrame(idleFrames.get(name).src, action === 'rice');
         idleEndTimer = setTimeout(() => play(index + 1), duration);
       };
       play(0);
     }, 10000 + Math.random() * 14000);
   }
-  Object.values(spriteNames).concat('working-02').forEach(name => { const img = new Image(); img.src = '../assets/winter/' + name + '.png'; });
+  [...new Set(Object.values(spriteNames).concat('working-02'))].filter(name => !idleFrames.has(name)).forEach(name => { const img = new Image(); img.src = '../assets/winter/' + name + '.png'; });
   function showSprite(status) {
     if (spriteState === status) return;
     stopBlink();
@@ -124,29 +199,26 @@
     paintComposer();
     if (changed) syncSize();
   }
-  // The window grows with the panel's content: report the height the open panel needs.
-  let sentHeight = 0;
-  // Both layouts are bottom-anchored columns, so the height they need is everything from the
-  // top of the first visible block down to the window bottom, plus the top padding.
-  function neededHeight() {
-    const top = parseFloat(getComputedStyle($('app')).paddingTop) || 0;
-    if (!expanded) return Math.ceil(window.innerHeight - document.querySelector('.pet-stage').getBoundingClientRect().top + top);
-    const content = $('panel-content');
-    const overflow = content.scrollHeight - content.clientHeight;
-    return Math.ceil(window.innerHeight - $('panel').getBoundingClientRect().top + overflow + top);
-  }
+  // The window has a fixed height (the work area's), so only the expanded state and the width are
+  // reported; measuring the content's height on every render would be wasted layout work.
   let sentExpanded = null;
   let sentWidth = 0;
+  let sentPetRect = null;
   function syncSize() {
     if (!host) return;
-    const height = neededHeight();
+    const petBounds = $('character-wrap').getBoundingClientRect();
+    const rect = {x: petBounds.x, y: petBounds.y, width: petBounds.width, height: petBounds.height, viewHeight: window.innerHeight};
+    if (!sentPetRect || Object.keys(rect).some(key => rect[key] !== sentPetRect[key])) {
+      sentPetRect = rect;
+      host.reportPetRect?.(rect);
+    }
+    const appStyle = getComputedStyle($('app'));
     // Width: the page's own 276px column plus side padding, which grows while the composer shows.
-    const width = Math.ceil(276 + (parseFloat(getComputedStyle($('app')).paddingLeft) || 0) + (parseFloat(getComputedStyle($('app')).paddingRight) || 0));
-    if (sentExpanded === expanded && Math.abs(height - sentHeight) < 2 && width === sentWidth) return;
+    const width = Math.ceil(276 + (parseFloat(appStyle.paddingLeft) || 0) + (parseFloat(appStyle.paddingRight) || 0));
+    if (sentExpanded === expanded && width === sentWidth) return;
     sentExpanded = expanded;
-    sentHeight = height;
     sentWidth = width;
-    host.setExpanded(expanded, height, width);
+    host.setExpanded(expanded, 0, width);
   }
   const composerState = () => expanded ? 'open' : composer;
   function chatTitle(project) {
@@ -188,7 +260,29 @@
     menu.hidden = false;
     $('composer-workspace').setAttribute('aria-expanded', 'true');
   }
+  // The pet's work area (from the host). Where the composer on the pet's left would run off the screen's
+  // left edge, it opens mirrored on the pet's right instead.
+  let workArea = null, windowBounds = null;
+  // How far the window reaches below the screen's bottom edge (she stands on it); the composer, which
+  // sits at her feet, is lifted by about as much so it stays on screen.
+  const belowFloor = () => workArea && windowBounds ? Math.max(0, windowBounds.y + windowBounds.height - workArea.y - workArea.height) : 0;
+  // Worked out again only when the window moves, the screen changes or the pet is resized.
+  let composerSideValue = 'left';
+  function updateComposerSide() { composerSideValue = composerSide(); }
+  function composerSide() {
+    if (!workArea) return 'left';
+    const stage = document.querySelector('.pet-stage').getBoundingClientRect();
+    const scale = Number(getComputedStyle(document.documentElement).getPropertyValue('--pet-scale')) || 1;
+    // In pet-stage coordinates, as in styles.css: --icon-right, the 280px bar and its 14px hover ring.
+    const iconRight = 64 - 20 * scale, reach = 280 + 14;
+    const x = (windowBounds ? windowBounds.x : window.screenX) + stage.left;
+    const leftOverflow = workArea.x - (x + iconRight - reach);
+    const rightOverflow = x + 276 - iconRight + reach - (workArea.x + workArea.width);
+    return leftOverflow > 0 && rightOverflow < leftOverflow ? 'right' : 'left';
+  }
   function paintComposer() {
+    if ($('app').dataset.composerSide !== composerSideValue) $('app').dataset.composerSide = composerSideValue;
+    setVar($('app'), '--floor-lift', Math.max(0, belowFloor() - 3) + 'px');
     const target = state.projects.find(p => p.id === chatTarget);
     const input = $('composer-input');
     const placeholder = target ? '回复「' + chatTitle(target) + '」…' : '今天有什么可以帮您的？';
@@ -249,41 +343,64 @@
     }
   }
   function applyScale(value) {
-    const scale = Math.min(1.6, Math.max(0.6, Number(value) || 1));
-    document.documentElement.style.setProperty('--pet-scale', String(scale));
+    const scale = String(Math.min(1.6, Math.max(0.6, Number(value) || 1)));
+    if (document.documentElement.style.getPropertyValue('--pet-scale') === scale) return;
+    document.documentElement.style.setProperty('--pet-scale', scale);
+    updateComposerSide();
   }
 
+  // Retain card nodes and their listeners; state and drag updates usually do not change their content.
+  const projectCards = new Map();
   function renderProjects() {
-    const fragment = document.createDocumentFragment();
+    const list = $('projects');
+    const liveIds = new Set();
+    let cursor = list.firstChild;
     for (const project of state.projects) {
+      liveIds.add(project.id);
+      let card = projectCards.get(project.id);
+      if (!card) {
+        const button = document.createElement('button'); button.type = 'button';
+        const symbol = document.createElement('span'); symbol.className = 'project-symbol'; symbol.textContent = '⌁';
+        const copy = document.createElement('span'); copy.className = 'project-copy';
+        const name = document.createElement('span'); name.className = 'project-name';
+        const detail = document.createElement('span'); detail.className = 'project-state';
+        copy.append(name, detail);
+        const badge = document.createElement('span'); badge.className = 'project-status';
+        const badgeText = document.createTextNode(''); badge.append(document.createElement('i'), badgeText);
+        button.append(symbol, copy, badge);
+        card = {button, name, detail, badgeText, project};
+        projectCards.set(project.id, card);
+        button.addEventListener('click', () => {
+          // Always use current state, including a new completion with unchanged display text.
+          const project = card.project;
+          if (project.status === 'completed') {
+            acknowledgedCompletions.set(project.id, project.updatedAt);
+            if (state.notice?.sessionId === project.id && state.notice.kind === 'completed') dismissedNoticeId = state.notice.id;
+          }
+          if (edgeSide && !expanded) { chatTarget = project.id; selectedId = project.id; host?.revealEdge?.(); setExpanded(true); render(); return; }
+          if (chatTarget === project.id) { chatTarget = null; } else { chatTarget = project.id; selectedId = project.id; }
+          render();
+        });
+      }
+      card.project = project;
       const status = projectStatus(project);
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.className = 'project' + (project.id === chatTarget ? ' selected' : '');
-      button.dataset.status = status;
-      button.setAttribute('aria-pressed',String(project.id === chatTarget));
-      const symbol = document.createElement('span'); symbol.className='project-symbol'; symbol.textContent = '⌁';
-      const copy = document.createElement('span'); copy.className='project-copy';
-      const name = document.createElement('span'); name.className='project-name'; name.textContent=string(project.name)||'未命名项目';
-      const detail = document.createElement('span'); detail.className='project-state'; detail.textContent=projectDetail(project);
-      copy.append(name,detail);
-      const badge = document.createElement('span'); badge.className='project-status';
-      const dot = document.createElement('i');
-      badge.append(dot,document.createTextNode(status==='approval'?'待审批':status==='completed'?'已完成':status==='error'?'异常':status==='aborted'?'已中断':status==='idle'?'待机':'进行中'));
-      button.append(symbol,copy,badge);
-      button.title=string(project.name)+' · '+projectDetail(project);
-      // Clicking a card picks it as the conversation to continue; clicking it again un-picks it.
-      button.addEventListener('click',() => {
-        if (project.status === 'completed') {
-          acknowledgedCompletions.set(project.id, project.updatedAt);
-          if (state.notice?.sessionId === project.id && state.notice.kind === 'completed') dismissedNoticeId = state.notice.id;
-        }
-        if(chatTarget===project.id){chatTarget=null;}else{chatTarget=project.id;selectedId=project.id;}
-        render();
-      });
-      fragment.append(button);
+      const selected = project.id === chatTarget;
+      const className = 'project' + (selected ? ' selected' : '');
+      if (card.button.className !== className) card.button.className = className;
+      if (card.button.dataset.status !== status) card.button.dataset.status = status;
+      if (card.button.getAttribute('aria-pressed') !== String(selected)) card.button.setAttribute('aria-pressed', String(selected));
+      const name = string(project.name), detail = projectDetail(project);
+      setText(card.name, name || '未命名项目'); setText(card.detail, detail);
+      const badge = status === 'approval' ? '待审批' : status === 'completed' ? '已完成' : status === 'error' ? '异常' : status === 'aborted' ? '已中断' : status === 'idle' ? '待机' : '进行中';
+      if (card.badgeText.data !== badge) card.badgeText.data = badge;
+      const title = name + ' · ' + detail;
+      if (card.button.title !== title) card.button.title = title;
+      if (card.button !== cursor) list.insertBefore(card.button, cursor);
+      cursor = card.button.nextSibling;
     }
-    $('projects').replaceChildren(fragment);
+    for (const [id, card] of projectCards) {
+      if (!liveIds.has(id)) { card.button.remove(); projectCards.delete(id); }
+    }
   }
   function renderApproval() {
     const approval = state.approvals.find(a=>a.projectId===selectedId) || state.approvals[0];
@@ -293,11 +410,12 @@
       activeApprovalId=approval.id;
       $('decision-error').hidden=true;
     }
-    $('approval-count').textContent=state.approvals.length>1?`还有 ${state.approvals.length} 项操作等待审批`:'等待你确认后继续';
-    $('approval-project').textContent=string(approval.projectName)||'当前项目';
-    $('approval-reason').textContent=string(approval.reason)||'此操作需要你的授权。';
-    $('operation-label').textContent=approval.tool?'具体操作 · '+string(approval.tool):'具体操作';
-    $('approval-operation').textContent=string(approval.operation)||'未提供操作详情，请在 dsh 中核实。';
+    // Unchanged text is left alone: the operation can be 64KB, re-laid out on every state push otherwise.
+    setText($('approval-count'), state.approvals.length>1?`还有 ${state.approvals.length} 项操作等待审批`:'等待你确认后继续');
+    setText($('approval-project'), string(approval.projectName)||'当前项目');
+    setText($('approval-reason'), string(approval.reason)||'此操作需要你的授权。');
+    setText($('operation-label'), approval.tool?'具体操作 · '+string(approval.tool):'具体操作');
+    setText($('approval-operation'), string(approval.operation)||'未提供操作详情，请在 dsh 中核实。');
     $('allow').disabled=pendingDecision || !approval.operation;
     $('reject').disabled=pendingDecision;
   }
@@ -374,8 +492,8 @@
     $('question-section').hidden = !batch;
     if (!batch) { activeQuestionId = null; return; }
     if (activeQuestionId !== batch.id) { activeQuestionId = batch.id; $('question-error').hidden = true; buildQuestion(batch); }
-    $('question-count').textContent = state.questions.length > 1 ? `还有 ${state.questions.length} 组问题等待回答` : '回答后任务会继续';
-    $('question-project').textContent = string(batch.projectName) || '当前项目';
+    setText($('question-count'), state.questions.length > 1 ? `还有 ${state.questions.length} 组问题等待回答` : '回答后任务会继续');
+    setText($('question-project'), string(batch.projectName) || '当前项目');
     const simple = batch.questions.length === 1 && !batch.questions[0].multiSelect;
     // A one-click question only needs the button for a typed reply.
     $('question-submit').hidden = simple && !questionAnswers(batch)[0].custom;
@@ -390,7 +508,7 @@
       noticeTimer = setTimeout(() => { dismissedNoticeId = noticeTimerFor; $('notice').classList.remove('leaving'); render(); }, 800);
     }, NOTICE_MS);
   }
-  function render() {
+  function render(poseOnly = false) {
     if (!state.projects.some(p=>p.id===selectedId)) selectedId=state.projects[0]?.id ?? null;
     if (chatTarget && !state.projects.some(p=>p.id===chatTarget)) chatTarget=null;
     const project=state.projects.find(p=>p.id===selectedId);
@@ -398,14 +516,32 @@
     const status=waiting?'approval':!state.connected?'disconnected':project?projectStatus(project):'idle';
     $('app').dataset.status=status;
     const poseStatus = status === 'completed' && (!state.notice || state.notice.id === dismissedNoticeId) ? 'idle' : status;
-    showSprite(state.approvals.length ? 'approval' : state.questions.length ? 'question' : poseStatus);
+    const peeking = edgeSide && !expanded && !waiting;
+    if (waiting || peeking) stopLanding();
+    $('app').dataset.landing = landingActive ? 'true' : '';
+    const attracted = !peeking && !waiting && !landingActive ? edgeAttraction : null;
+    $('app').dataset.edge = peeking ? edgeSide : '';
+    if (!peeking) peekHover = false;
+    // Peeking: the cards stay laid out (faded out) so hovering the pet can breathe them in.
+    $('panel').hidden = !expanded && !(peeking && state.projects.length);
+    $('app').dataset.peek = peeking && peekHover ? (state.projects.length ? 'cards' : 'summary') : '';
+    $('app').dataset.attracted = attracted?.side || '';
+    setVar($('character'), '--floor-squash', 1 - (attracted?.side === 'bottom' ? attracted.strength * .015 : 0));
+    const pull = (attracted?.side === 'left' ? -1 : 1) * (attracted?.strength || 0);
+    setVar($('character'), '--edge-pull-x', (pull * 5) + 'px');
+    // Pivot near the face: positive rotation pulls the legs left, negative pulls them right.
+    setVar($('character'), '--edge-pull-angle', (-pull * 20) + 'deg');
+    showSprite(landingActive ? 'landing' : peeking ? 'peek-' + edgeSide : attracted ? 'attracted-' + attracted.side : state.approvals.length ? 'approval' : state.questions.length ? 'question' : poseStatus);
+    // Attraction changes only the sprite; cards, composer and geometry are unchanged.
+    if (poseOnly) return;
     // Quiet: nothing thinking, working or waiting for approval. The status bubble then hides until hovered.
     $('app').dataset.quiet=String(!waiting && !state.projects.some(p=>['thinking','working'].includes(safeStatus(p.status))));
-    $('current-project').textContent=project?string(project.name):petName;
-    $('character-wrap').title='右键打开菜单';
-    $('current-status').textContent=state.approvals.length?`${state.approvals.length} 项操作等待批准`:state.questions.length?`${state.questions.length} 组问题等待回答`:state.connected && project?projectDetail(project):labels[status];
-    $('current-status').title=$('current-status').textContent;
-    $('mood').textContent=moods[status];
+    setText($('current-project'), project?string(project.name):petName);
+    $('character-wrap').removeAttribute('title');
+    const statusText=state.approvals.length?`${state.approvals.length} 项操作等待批准`:state.questions.length?`${state.questions.length} 组问题等待回答`:state.connected && project?projectDetail(project):labels[status];
+    setText($('current-status'), statusText);
+    if ($('current-status').title!==statusText) $('current-status').title=statusText;
+    setText($('mood'), moods[status]);
     $('demo-label').hidden=!displayDemo;
     renderProjects();
     renderQuestion();
@@ -415,11 +551,29 @@
     if (notice && notice.id!==dismissedNoticeId && notice.id!==noticeTimerFor) {noticeTimerFor=notice.id;$('notice').classList.remove('leaving');armNotice();}
     if (notice) {
       $('notice').dataset.kind=string(notice.kind);
-      $('notice-title').textContent=string(notice.title)||'有新的任务消息';
-      $('notice-body').textContent=string(notice.body);
+      setText($('notice-title'), string(notice.title)||'有新的任务消息');
+      setText($('notice-body'), string(notice.body));
     }
     paintComposer();
+    if (peeking) placePeek();
     syncSize();
+  }
+  // Peeking from a screen edge: hovering the pet breathes the task cards in just above its head,
+  // leaning towards the screen (right of the head on the left edge, left of it on the right edge).
+  // With no tasks the status bubble shows there instead.
+  let peekHover = false, peekLeaveTimer;
+  function placePeek() {
+    const app = $('app').getBoundingClientRect();
+    const stage = document.querySelector('.pet-stage').getBoundingClientRect();
+    const pet = $('character-wrap').getBoundingClientRect();
+    // The middle of the head, just above the hood; the cards grow away from the screen edge.
+    const x = edgeSide === 'left' ? pet.left + pet.width * 0.5 : pet.right - pet.width * 0.5;
+    const y = pet.top + pet.height * 0.16;
+    const style = $('app').style;
+    style.setProperty('--peek-panel-x', Math.round(edgeSide === 'left' ? x - app.left : app.right - x) + 'px');
+    style.setProperty('--peek-panel-y', Math.round(app.bottom - y) + 'px');
+    style.setProperty('--peek-stage-x', Math.round(edgeSide === 'left' ? x - stage.left : stage.right - x) + 'px');
+    style.setProperty('--peek-stage-y', Math.round(stage.bottom - y) + 'px');
   }
   function receive(next) {
     if (!next || typeof next!=='object') return;
@@ -462,6 +616,21 @@
   let dragging=false;
   let pressedAt=null;
   const pet=$('character-wrap');
+  pet.addEventListener('dblclick', () => { host?.revealEdge?.(); setExpanded(true); render(); });
+  // Moving between the peeking pet and what it shows (across the small gap) never counts as leaving.
+  const PEEK_PARTS = '#character-wrap, #panel, #summary';
+  const peekEnter = () => {
+    clearTimeout(peekLeaveTimer);
+    if (!edgeSide || expanded || peekHover) return;
+    peekHover = true;
+    render();
+  };
+  const peekLeave = event => {
+    if (!peekHover || (event.relatedTarget instanceof Element && event.relatedTarget.closest(PEEK_PARTS))) return;
+    clearTimeout(peekLeaveTimer);
+    peekLeaveTimer = setTimeout(() => { peekHover = false; render(); }, 300);
+  };
+  for (const id of ['character-wrap', 'panel', 'summary']) { $(id).addEventListener('pointerenter', peekEnter); $(id).addEventListener('pointerleave', peekLeave); }
   // The compose icon shows while the pointer is on the pet and fades after; a click does not pin it.
   const petClicked=()=>{};
   const endDrag=event=>{
@@ -473,7 +642,7 @@
   };
   // No pointer capture: the window stays under the cursor anyway, and a capture that outlives a
   // lost pointerup would swallow every later click on the buttons.
-  pet.addEventListener('pointerdown',event=>{if(event.button!==0)return;if(!host){pressedAt={x:event.screenX,y:event.screenY,t:Date.now()};return;}dragging=true;pressedAt={x:event.screenX,y:event.screenY,t:Date.now()};host.dragStart();});
+  pet.addEventListener('pointerdown',event=>{if(event.button!==0)return;if(landingActive){stopLanding();render();}if(!host){pressedAt={x:event.screenX,y:event.screenY,t:Date.now()};return;}dragging=true;pressedAt={x:event.screenX,y:event.screenY,t:Date.now()};host.dragStart();});
   // Demo page (no host): no dragging, but a click still toggles the composer icon.
   pet.addEventListener('pointerup',event=>{if(host||!pressedAt)return;const from=pressedAt;pressedAt=null;if(Math.hypot(event.screenX-from.x,event.screenY-from.y)<4)petClicked();});
   window.addEventListener('pointermove',event=>{if(dragging&&event.buttons===0)endDrag(event);});
@@ -489,7 +658,7 @@
     menu.hidden=false;
     const stage=document.querySelector('.pet-stage').getBoundingClientRect();
     const left=Math.max(4,Math.min(x,window.innerWidth-menu.offsetWidth-4))-stage.left;
-    const top=Math.max(4,Math.min(y,window.innerHeight-menu.offsetHeight-4))-stage.top;
+    const top=Math.max(4,Math.min(y,window.innerHeight-belowFloor()-menu.offsetHeight-4))-stage.top;
     menu.style.left=left+'px';menu.style.top=top+'px';
   }
   document.addEventListener('contextmenu',event=>{
@@ -543,6 +712,21 @@
   $('demo-label').hidden=!isDemo;
   if (isDemo) {
     receive({connected:true,projects:[{id:'demo-1',name:'个人网站',status:'working',detail:'正在修改页面样式'},{id:'demo-2',name:'数据分析助手',status:'approval',detail:'等待运行命令的批准'}],approvals:[{id:'demo-approval',projectId:'demo-2',projectName:'数据分析助手',tool:'shell',reason:'需要运行测试来验证刚才的修改。此处为演示数据。',operation:'npm test'}],notice:null});
-  } else {render();unsubscribe=host.onState(receive);}
+  } else {
+    const offLanding = host.onLanding?.(land);
+    window.addEventListener('unload', () => offLanding?.());
+    const offHint = host.onEdgeHint?.(hint => {
+      edgeAttraction = hint && ['left','right','bottom'].includes(hint.side) ? {side: hint.side, strength: Math.max(.25, Math.min(1, Number(hint.strength) || .25))} : null;
+      render(true);
+    });
+    window.addEventListener('unload', () => offHint?.());
+    const offEdge = host.onEdge?.(side => { edgeSide = side === 'left' || side === 'right' ? side : null; peekHover = false; clearTimeout(peekLeaveTimer); if (edgeSide) setExpanded(false); render(); });
+    window.addEventListener('unload', () => offEdge?.());
+    const offArea = host.onArea?.(area => { if (area && ['x','y','width','height'].every(k => Number.isFinite(area[k]))) { workArea = area; const w = area.window; windowBounds = w && ['x','y','width','height'].every(k => Number.isFinite(w[k])) ? w : null; updateComposerSide(); paintComposer(); } });
+    window.addEventListener('unload', () => offArea?.());
+    // The new width can land after the host's area message: work the composer's side out again.
+    window.addEventListener('resize', () => { updateComposerSide(); paintComposer(); syncSize(); });
+    render();unsubscribe=host.onState(receive);
+  }
   window.addEventListener('unload',()=>{if(typeof unsubscribe==='function')unsubscribe();});
 })();

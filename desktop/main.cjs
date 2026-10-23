@@ -3,6 +3,7 @@ const net = require('node:net');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const { sideAt, dockBounds, hintAt, clampPetBounds } = require('./edge.cjs');
 const ROOT = path.resolve(__dirname, '..');
 const LOCAL = path.join(ROOT, '.local');
 fs.mkdirSync(LOCAL, { recursive: true });
@@ -16,8 +17,21 @@ const preferences = path.join(LOCAL, 'window.json');
 // Every launch starts on top; unpinning lasts for this run only, so only the position is remembered.
 let settings = { top: true };
 try { const saved = JSON.parse(fs.readFileSync(preferences, 'utf8')); settings = { ...settings, x: saved.x, y: saved.y }; } catch {}
-// Hidden test windows never overwrite the real pet's remembered position.
-function save() { if (hidden || !win || win.isDestroyed()) return; const b = win.getBounds(); fs.writeFileSync(preferences, JSON.stringify({ x: b.x + b.width, y: b.y + b.height })); }
+// Empty room the page keeps right of the pet column (--peek-room in styles.css): peeking from the left
+// edge, the task cards lean right of the head into it, and near the left edge the composer opens there.
+// Only the pet column has to stay on screen.
+const PEEK_ROOM = 250;
+// Hidden test windows never overwrite the real pet's remembered position (the pet column's right edge).
+// Unchanged positions are not rewritten.
+let savedPosition = '';
+function save() {
+  if (hidden || !win || win.isDestroyed()) return;
+  const b = win.getBounds();
+  const position = JSON.stringify({ x: b.x + b.width - PEEK_ROOM, y: b.y + b.height });
+  if (position === savedPosition) return;
+  savedPosition = position;
+  fs.writeFileSync(preferences, position);
+}
 // The window keeps one size while the pet is used: resizing a transparent window repaints it, and the
 // pet visibly flickered whenever cards, notices or the composer changed its size. It is as tall as the
 // work area and as wide as the page asks (room for the composer; it only changes with the pet size),
@@ -26,19 +40,86 @@ const SIZES = { collapsed: { width: 300, height: 240 }, expanded: { width: 300 }
 let reportedWidth = 0;
 // The size the window is meant to have; drags reuse it so display-scaling rounding never accumulates.
 let targetSize = { width: SIZES.collapsed.width, height: SIZES.collapsed.height };
+let petRect = null, edgeSide = null;
+let lastEdgeHint = '';
+function updateDragHint(active) {
+  const hint = active && petRect && !state.approvals.length && !(state.questions ?? []).length
+    ? hintAt(win.getBounds(), petRect, petDisplay().workArea) : null;
+  const key = JSON.stringify(hint);
+  if (key === lastEdgeHint) return;
+  lastEdgeHint = key;
+  if (rendererReady) win.webContents.send('whale:edge-hint', hint);
+}
+function petDisplay() {
+  const b = win.getBounds();
+  return screen.getDisplayNearestPoint({ x: Math.round(b.x + (petRect?.x ?? b.width / 2) + (petRect?.width ?? 0) / 2), y: Math.round(b.y + (petRect?.y ?? b.height / 2) + (petRect?.height ?? 0) / 2) });
+}
+// Where her feet are in the pet box: the sprites are square with the feet at 98.8% of their height,
+// drawn 112px wide in a 156px image box, inside the 160px-tall pet box.
+const FEET = 0.84;
+const feetFromTop = () => petRect.y + petRect.height * FEET;
+// Released close above the bottom edge of the screen, she stands on it (her box may hang below it).
+function standOnFloor(bounds, area) {
+  if (!petRect) return bounds;
+  const gap = area.y + area.height - (bounds.y + feetFromTop());
+  const snap = Math.max(48, petRect.height * (1 - FEET) + 16);
+  return gap >= -1 && gap <= snap ? { ...bounds, y: Math.round(area.y + area.height - feetFromTop()) } : bounds;
+}
+// Keep the pet on the screen; downwards she may go until her feet touch the bottom edge.
+function keepOnScreen(bounds, area) {
+  const clamped = clampPetBounds(bounds, petRect, area);
+  return bounds.y > clamped.y ? { ...clamped, y: Math.round(Math.min(bounds.y, area.y + area.height - feetFromTop())) } : clamped;
+}
+// Released: on the screen, standing on its bottom edge when she is close to it.
+const placePet = (bounds, area) => standOnFloor(keepOnScreen(bounds, area), area);
+function setEdge(side) {
+  if (edgeSide === side) return;
+  edgeSide = side;
+  if (rendererReady) win.webContents.send('whale:edge', side);
+}
+function dockAtEdge() {
+  if (!petRect || state.approvals.length || (state.questions ?? []).length) return;
+  const area = petDisplay().workArea;
+  const b = win.getBounds();
+  const side = sideAt(b, petRect, area);
+  if (side) expanded = false;
+  setEdge(side);
+  if (side) win.setBounds(dockBounds(b, petRect, area, side));
+}
+function revealEdge() {
+  if (!edgeSide) return;
+  setEdge(null);
+  resize(expanded);
+}
 function resize(value, _height, reported) {
   expanded = value;
+  if (expanded) setEdge(null);
   const b = win.getBounds();
-  const area = screen.getDisplayMatching(b).workArea;
+  const area = petDisplay().workArea;
   if (reported > 0) reportedWidth = Math.round(reported);
   const width = Math.min(area.width, Math.max(SIZES.collapsed.width, reportedWidth));
   const height = area.height;
   targetSize = { width, height };
-  // Keep the pet column (the right 300px) and the pet's feet on screen; the rest may hang off an edge.
-  const right = Math.max(area.x + SIZES.collapsed.width, Math.min(b.x + b.width, area.x + area.width));
-  const bottom = Math.max(area.y + 200, Math.min(b.y + b.height, area.y + area.height));
-  const next = { x: right - width, y: bottom - height, width, height };
+  // Keep the pet column (300px left of the peek room) and the pet's feet on screen; the rest may hang off an edge.
+  const right = Math.max(area.x + SIZES.collapsed.width + PEEK_ROOM, Math.min(b.x + b.width, area.x + area.width + PEEK_ROOM));
+  // Standing on the bottom edge, the window reaches below it by as much as her feet are above its bottom.
+  const below = petRect ? Math.max(0, Math.round(b.height - feetFromTop())) : 0;
+  const bottom = Math.max(area.y + 200, Math.min(b.y + b.height, area.y + area.height + below));
+  let next = { x: right - width, y: bottom - height, width, height };
+  if (edgeSide && petRect) next = dockBounds({ ...next, x: b.x + b.width - width }, { ...petRect, x: petRect.x + width - b.width, y: petRect.y + height - b.height }, area, edgeSide);
   if (next.x !== b.x || next.y !== b.y || next.width !== b.width || next.height !== b.height) win.setBounds(next);
+  publishArea();
+}
+// The pet's work area and the window's bounds, so the page can keep the composer on screen. Sent only
+// when they change: the page measures its layout on each one.
+let sentArea = '';
+function publishArea() {
+  if (!rendererReady || !win || win.isDestroyed()) return;
+  const area = { ...petDisplay().workArea, window: win.getBounds() };
+  const key = JSON.stringify(area);
+  if (key === sentArea) return;
+  sentArea = key;
+  win.webContents.send('whale:area', area);
 }
 function publish() { if (rendererReady && win && !win.isDestroyed()) win.webContents.send('whale:state', { ...state, alwaysOnTop: settings.top }); }
 function show() { if (!hidden && !standby && win && !win.isDestroyed()) win.showInactive(); }
@@ -113,7 +194,7 @@ function connect() {
         const oldNotice = state.notice?.id;
         state = msg.state;
         if ([...state.approvals, ...(state.questions ?? [])].some(a => !previous.has(a.id))) { resize(true); show(); }
-        if (state.notice?.id && state.notice.id !== oldNotice) show();
+        if (state.notice?.id && state.notice.id !== oldNotice) { revealEdge(); show(); }
         publish();
       }
     }
@@ -123,10 +204,10 @@ function connect() {
 }
 app.whenReady().then(async () => {
   const area = screen.getPrimaryDisplay().workArea;
-  const right = Number.isFinite(settings.x) ? settings.x : area.x + area.width - 24;
+  const right = (Number.isFinite(settings.x) ? settings.x : area.x + area.width - 24) + PEEK_ROOM;
   const bottom = Number.isFinite(settings.y) ? settings.y : area.y + area.height - 16;
   win = new BrowserWindow({
-    width: SIZES.collapsed.width, height: SIZES.collapsed.height, x: Math.max(area.x, Math.min(right - SIZES.collapsed.width, area.x + area.width - SIZES.collapsed.width)), y: Math.max(area.y, Math.min(bottom - SIZES.collapsed.height, area.y + area.height - SIZES.collapsed.height)),
+    width: SIZES.collapsed.width, height: SIZES.collapsed.height, x: Math.max(area.x, Math.min(right - SIZES.collapsed.width, area.x + area.width + PEEK_ROOM - SIZES.collapsed.width)), y: Math.max(area.y, Math.min(bottom - SIZES.collapsed.height, area.y + area.height - SIZES.collapsed.height)),
     title: '鲸鱼娘 · DSH', frame: false, transparent: true, backgroundColor: '#00000000', show: false, hasShadow: false,
     resizable: false, maximizable: false, minimizable: false, skipTaskbar: true, alwaysOnTop: settings.top,
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true, nodeIntegration: false, devTools: false, backgroundThrottling: true, spellcheck: false },
@@ -135,41 +216,80 @@ app.whenReady().then(async () => {
   win.webContents.on('will-navigate', e => e.preventDefault());
   win.webContents.session.setPermissionRequestHandler((_wc, _perm, cb) => cb(false));
   win.on('close', (e) => { if (!closing) { e.preventDefault(); win.hide(); } });
-  win.on('moved', save);
+  // A drag saves once when it ends.
+  win.on('moved', () => { if (!drag) save(); });
   // Windows reports right-clicks on drag regions as a system menu request; show ours instead.
   // The pet is dragged by the page (not a drag region), so right-clicks reach it as ordinary
   // events. While a drag lasts the window follows the real cursor; page move events are not
   // used, since they go stale once the window moves under the pointer.
   let drag;
   const stopDrag = () => {
+    updateDragHint(false);
     if (!drag) return;
     clearInterval(drag.timer);
     const { width, height } = targetSize;
+    const moved = drag.moved;
     drag = undefined;
-    if (win && !win.isDestroyed()) { const b = win.getBounds(); if (b.width !== width || b.height !== height) win.setBounds({ x: b.x, y: b.y, width, height }); }
+    let landing = null;
+    if (win && !win.isDestroyed()) {
+      const b = win.getBounds();
+      const next = petRect ? placePet({...b,width,height}, petDisplay().workArea) : {...b,width,height};
+      win.setBounds(next);
+      const area = petDisplay().workArea;
+      if (moved && petRect && next.y - b.y > 2 && Math.abs(next.y + feetFromTop() - (area.y + area.height)) <= 1)
+        landing = {drop: Math.max(0, next.y - b.y)};
+    }
     save();
+    dockAtEdge();
+    if (landing && !edgeSide && rendererReady) win.webContents.send('whale:landing', landing);
+    publishArea();
   };
   ipcMain.on('whale:drag', (e, phase) => {
     if (!own(e)) return;
     if (phase === 'end') return stopDrag();
     if (phase !== 'start') return;
     stopDrag();
+    setEdge(null);
     const cursor = screen.getCursorScreenPoint();
     const start = win.getBounds();
     const offset = { x: cursor.x - start.x, y: cursor.y - start.y };
     const startedAt = Date.now();
+    updateDragHint(true);
+    let last = cursor;
     drag = { timer: setInterval(() => {
       if (!win || win.isDestroyed() || Date.now() - startedAt > 30000) return stopDrag();
       const point = screen.getCursorScreenPoint();
+      // A held but unmoved cursor leaves the window where it is.
+      if (point.x === last.x && point.y === last.y) return;
+      last = point;
+      if (Math.hypot(point.x - cursor.x, point.y - cursor.y) > 3) drag.moved = true;
       const b = win.getBounds();
-      const x = point.x - offset.x, y = point.y - offset.y;
+      const desired = {x: point.x - offset.x, y: point.y - offset.y, ...targetSize};
+      const next = petRect ? keepOnScreen(desired, screen.getDisplayNearestPoint(point).workArea) : desired;
       // Always the intended size: re-reading it lets display-scaling rounding grow the window.
-      if (x !== b.x || y !== b.y) win.setBounds({ x, y, ...targetSize });
+      if (next.x !== b.x || next.y !== b.y) win.setBounds(next);
+      updateDragHint(true);
     }, 16) };
   });
   win.on('blur', stopDrag);
   const own = event => event.sender === win.webContents;
-  ipcMain.on('whale:ready', e => { if (!own(e)) return; rendererReady = true; publish(); if (socket?.readyState === 'open') socket.write(JSON.stringify({ type: 'ready' }) + '\n'); });
+  ipcMain.on('whale:ready', e => { if (!own(e)) return; rendererReady = true; sentArea = ''; publish(); publishArea(); if (socket?.readyState === 'open') socket.write(JSON.stringify({ type: 'ready' }) + '\n'); });
+  ipcMain.on('whale:pet-rect', (e, rect) => {
+    if (!own(e) || !rect || !['x','y','width','height'].every(key => Number.isFinite(rect[key])) || rect.width <= 0 || rect.height <= 0 || rect.width > 1000 || rect.height > 1000) return;
+    // The page is laid out from the bottom, and under display scaling its height can differ from the
+    // window's by a pixel or two: keep the pet's distance from the bottom, as the window sees it.
+    const shift = Number.isFinite(rect.viewHeight) && rect.viewHeight > 0 ? win.getBounds().height - rect.viewHeight : 0;
+    petRect = { x: rect.x, y: rect.y + shift, width: rect.width, height: rect.height };
+    // Reported on every render: display-scaling rounding may differ by a pixel from the last placement,
+    // and chasing it would make the pet creep, so only real moves are applied.
+    const b = win.getBounds();
+    const next = edgeSide && !expanded ? dockBounds(b, petRect, petDisplay().workArea, edgeSide) : drag ? keepOnScreen(b, petDisplay().workArea) : placePet(b, petDisplay().workArea);
+    if (Math.abs(next.x - b.x) > 1 || Math.abs(next.y - b.y) > 1) { win.setBounds(next); publishArea(); }
+  });
+  ipcMain.on('whale:reveal', e => { if (own(e)) revealEdge(); });
+  const displayChanged = () => { if (!win || win.isDestroyed()) return; setEdge(null); resize(expanded); };
+  screen.on('display-removed', displayChanged);
+  screen.on('display-metrics-changed', displayChanged);
   ipcMain.on('whale:expanded', (e, value, height, width) => { if (own(e)) resize(Boolean(value), Number(height), Number(width)); });
   // The page says whether the pointer is over something it draws; elsewhere clicks go to what is below.
   let interactive = false;
@@ -231,4 +351,4 @@ app.whenReady().then(async () => {
 }).catch(error => { console.error('[whale-pet]', error); app.exit(1); });
 app.on('before-quit', () => { closing = true; save(); socket?.destroy(); tray?.destroy(); });
 app.on('window-all-closed', () => app.quit());
-module.exports = { getWindow: () => win, getState: () => state, isPinned: () => settings.top, quit };
+module.exports = { getWindow: () => win, getState: () => state, isPinned: () => settings.top, dockAtEdge, revealEdge, quit };

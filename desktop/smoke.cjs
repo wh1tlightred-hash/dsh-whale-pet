@@ -22,7 +22,7 @@ const assert = (value, message) => { if (!value) throw new Error(message); };
   // One window size throughout: as tall as the work area, wide enough for the composer (300 + 236).
   const area = require('electron').screen.getDisplayMatching(withApproval).workArea;
   const sameWindow = b => Math.abs(b.width - withApproval.width) <= 1 && Math.abs(b.height - withApproval.height) <= 1;
-  assert(Math.abs(withApproval.width - 536) <= 2 && Math.abs(withApproval.height - area.height) <= 1, `the window should be work-area tall and 536 wide, got ${JSON.stringify(withApproval)}`);
+  assert(Math.abs(withApproval.width - 786) <= 2 && Math.abs(withApproval.height - area.height) <= 1, `the window should be work-area tall and 786 wide (536 + 250 peek room), got ${JSON.stringify(withApproval)}`);
   const panelHeight = () => win.webContents.executeJavaScript("document.getElementById('panel').offsetHeight");
   const panelWithApproval = await panelHeight();
   await win.webContents.executeJavaScript("document.getElementById('allow').click()");
@@ -76,6 +76,10 @@ const assert = (value, message) => { if (!value) throw new Error(message); };
     const after = win.getBounds();
     return { dx: moved.x - b.x, dy: moved.y - b.y, followedAfterRelease: after.x !== moved.x || after.y !== moved.y, sameSize: Math.abs(moved.width - b.width) <= 1 && Math.abs(moved.height - b.height) <= 1 };
   };
+  // Drag mid-screen: released close above the bottom edge she would step down onto it.
+  // The hidden window opens where the real pet was left; centre it so no screen edge is near (near the left
+  // edge the composer would open on the pet's right).
+  { const b = win.getBounds(); win.setPosition(area.x + Math.round((area.width - b.width) / 2), b.y - 300); await wait(200); }
   const sizeBefore = win.getBounds();
   const drags = [await dragBy(30, -20), await dragBy(-30, 20), await dragBy(15, 10)];
   const sizeAfter = win.getBounds();

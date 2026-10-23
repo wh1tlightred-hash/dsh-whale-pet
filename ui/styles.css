@@ -63,8 +63,46 @@
    interactive list, so clicks on it still go through to whatever is below the pet window. */
 .composer-zone{display:none;position:absolute;z-index:5;left:calc(var(--bar-right) - var(--bar-w) - 14px);width:calc(var(--bar-w) + 28px);bottom:calc(6px * var(--pet-scale,1) - 16px);height:100px}.companion[data-composer=open] .composer-zone{display:block}
 /* Brief idle gestures, separated by a random quiet interval. */
+.companion[data-attracted=left] .character,.companion[data-attracted=right] .character{animation:none;transform-origin:50% 43%;transform:translateX(var(--edge-pull-x)) rotate(var(--edge-pull-angle));transition:transform .12s ease-out}
+.companion[data-edge=left] .character,.companion[data-edge=right] .character{animation:none;filter:drop-shadow(0 3px 3px #4d8ac41c)}
+.companion[data-edge=left] .character{transform:none}
+.companion[data-edge=right] .character{transform:scaleX(-1)}
+.companion[data-edge=left] .summary,.companion[data-edge=right] .summary,.companion[data-edge=left] .composer,.companion[data-edge=right] .composer{visibility:hidden;pointer-events:none}
+.companion[data-edge=left] .mood,.companion[data-edge=right] .mood,.companion[data-edge=left] .spark,.companion[data-edge=right] .spark,.companion[data-edge=left] .water-ring,.companion[data-edge=right] .water-ring{visibility:hidden}
+.companion .character-transition{position:absolute;inset:0;margin:auto;animation:none!important;pointer-events:none}
 .companion .character[data-idle-action=look],.companion .character[data-idle-action=rice]{animation:none}
 .companion .character[data-idle-action=nod]{animation:idle-nod 2.4s ease-in-out}
 @keyframes idle-nod{0%,45%,100%{transform:none}22%,65%{transform:translateY(3px) scaleY(.96) rotate(-2deg)}82%{transform:translateY(-2px)}}
 /* The list opens upwards: the chevron points up while closed, down while open. */
 .composer-workspace svg:last-child{transform:rotate(180deg);transition:transform .2s ease}.composer-workspace[aria-expanded=true] svg:last-child{transform:none}
+/* Long task names: a grid column would otherwise grow to the unwrapped title and push the status badge
+   off the card. Cap the column at the panel width; the name keeps its first characters and an ellipsis. */
+.project-list{grid-template-columns:minmax(0,1fr)}.project{min-width:0;overflow:hidden}.project-copy{min-width:0;overflow:hidden}.project-status{flex:none}
+
+/* Peeking from a screen edge. The window keeps --peek-room of empty space right of the pet (PEEK_ROOM in
+   main.cjs), so on the left edge the cards can lean right of the head (and the composer can open there,
+   see below). Hovering the pet breathes the task cards in above its head, towards the screen; with no
+   tasks the status bubble shows there instead. */
+.companion{--peek-room:250px;padding-right:calc(12px + var(--peek-room))}
+.companion:is([data-edge=left],[data-edge=right]) .panel{position:absolute;z-index:7;margin:0;bottom:var(--peek-panel-y);max-height:calc(100% - var(--peek-panel-y) - 8px);opacity:0;transform:translateY(6px) scale(.96);pointer-events:none;transition:opacity .9s cubic-bezier(.45,0,.25,1),transform .9s cubic-bezier(.45,0,.25,1)}
+.companion[data-edge=left] .panel{left:var(--peek-panel-x);transform-origin:0 100%}.companion[data-edge=right] .panel{right:var(--peek-panel-x);transform-origin:100% 100%}
+.companion[data-peek=cards] .panel{opacity:1;transform:none;pointer-events:auto}
+.companion:is([data-edge=left],[data-edge=right]) .summary{position:absolute;bottom:var(--peek-stage-y);visibility:visible;opacity:0!important;transform:translateY(6px) scale(.96)!important;pointer-events:none!important}
+.companion[data-edge=left] .summary{left:var(--peek-stage-x);transform-origin:0 100%}.companion[data-edge=right] .summary{right:var(--peek-stage-x);transform-origin:100% 100%}
+.companion[data-peek=summary] .summary{opacity:1!important;transform:none!important;pointer-events:auto!important}
+
+/* Near the left screen edge the composer opens on the pet's right, mirrored: the icon by the right leg,
+   the bar unrolling rightwards out of it (app.js picks the side). The workspace chip still sits above
+   the bar's logo end. */
+.companion[data-composer-side=right] .composer-icon{left:calc(276px - var(--icon-right))}
+.companion[data-composer-side=right] .composer-bar,.companion[data-composer-side=right] .composer-status{right:auto;left:calc(276px - var(--bar-right))}
+.companion[data-composer-side=right] .composer-workspace,.companion[data-composer-side=right] .workspace-menu{left:calc(276px - var(--bar-right))}
+.companion[data-composer-side=right] .composer-zone{left:calc(276px - var(--bar-right) - 14px)}
+
+/* Standing on the screen's bottom edge, the window reaches below it: the composer (icon, bar, chip, list,
+   status and hover zone) is lifted by --floor-lift (set by app.js) so none of it is cut off. */
+.composer>*{translate:0 calc(-1 * var(--floor-lift,0px))}
+
+/* Floor anticipation and landing pivot at the feet, keeping them above the work-area edge. */
+.companion[data-attracted=bottom] .character { animation:none; transform-origin:50% 85%; transform:scaleY(var(--floor-squash)); transition:transform .12s ease-out; }
+.companion[data-landing=true] .character { animation:none; transform-origin:50% 85%; transition:none; }

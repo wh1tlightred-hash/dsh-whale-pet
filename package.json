@@ -12,6 +12,7 @@
   "files": [
     "lib",
     "desktop/main.cjs",
+    "desktop/edge.cjs",
     "desktop/preload.cjs",
     "ui/index.html",
     "ui/app.js",
