@@ -34,6 +34,8 @@ contextBridge.exposeInMainWorld('whale', Object.freeze({
   setExpanded: (expanded, height, width) => ipcRenderer.send('whale:expanded', Boolean(expanded), Number(height) || 0, Number(width) || 0),
   setAlwaysOnTop: (value) => ipcRenderer.send('whale:top', Boolean(value)),
   hide: () => ipcRenderer.send('whale:hide'),
+  openDsh: () => ipcRenderer.send('whale:open-dsh'),
+  openSession: sessionId => ipcRenderer.invoke('whale:open-session', sessionId),
   setInteractive: (value) => ipcRenderer.send('whale:interactive', Boolean(value)),
   dragStart: () => ipcRenderer.send('whale:drag', 'start'),
   dragEnd: () => ipcRenderer.send('whale:drag', 'end'),

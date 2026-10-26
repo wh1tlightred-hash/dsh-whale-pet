@@ -189,7 +189,11 @@
   const acknowledgedCompletions = new Map();
   const projectStatus = project => project.status === 'completed' && acknowledgedCompletions.has(project.id) && acknowledgedCompletions.get(project.id) === project.updatedAt ? 'idle' : safeStatus(project.status);
   const projectDetail = project => project.status === 'completed' && projectStatus(project) === 'idle' ? labels.idle : string(project.detail) || labels[projectStatus(project)];
-  function setExpanded(value) {
+  // The task list opens by itself for an approval or a question (prompt = true) and closes again once
+  // nothing is waiting. Opening or closing it any other way is the user's choice and is left alone.
+  let openedForPrompt = false;
+  function setExpanded(value, prompt = false) {
+    openedForPrompt = prompt ? openedForPrompt || !expanded : false;
     const changed = expanded !== Boolean(value);
     expanded = Boolean(value);
     $('app').classList.toggle('expanded',expanded);
@@ -370,7 +374,8 @@
         button.append(symbol, copy, badge);
         card = {button, name, detail, badgeText, project};
         projectCards.set(project.id, card);
-        button.addEventListener('click', () => {
+        button.addEventListener('click', event => {
+          if (event.detail > 1) return;
           // Always use current state, including a new completion with unchanged display text.
           const project = card.project;
           if (project.status === 'completed') {
@@ -380,6 +385,20 @@
           if (edgeSide && !expanded) { chatTarget = project.id; selectedId = project.id; host?.revealEdge?.(); setExpanded(true); render(); return; }
           if (chatTarget === project.id) { chatTarget = null; } else { chatTarget = project.id; selectedId = project.id; }
           render();
+        });
+        button.addEventListener('dblclick', async event => {
+          event.preventDefault();
+          const project = card.project;
+          chatTarget = project.id; selectedId = project.id;
+          render();
+          if (!host?.openSession) { composerStatus('演示模式：无法打开 dsh 对话', null, 2500); return; }
+          if (card.opening) return;
+          card.opening = true;
+          try {
+            const result = await host.openSession(project.id);
+            if (!result?.ok) composerStatus(string(result?.error) || '打开对话失败，请稍后重试', 'error', 5000);
+          } catch { composerStatus('打开对话失败，请稍后重试', 'error', 5000); }
+          finally { card.opening = false; }
         });
       }
       card.project = project;
@@ -509,6 +528,8 @@
     }, NOTICE_MS);
   }
   function render(poseOnly = false) {
+    // Answered here or in DSH: the list the prompt opened folds away again.
+    if (!poseOnly && openedForPrompt && expanded && !state.approvals.length && !state.questions.length && !pendingDecision && !pendingAnswer) setExpanded(false);
     if (!state.projects.some(p=>p.id===selectedId)) selectedId=state.projects[0]?.id ?? null;
     if (chatTarget && !state.projects.some(p=>p.id===chatTarget)) chatTarget=null;
     const project=state.projects.find(p=>p.id===selectedId);
@@ -589,10 +610,10 @@
     }
     const fresh=state.approvals.find(a=>!seenApprovalIds.has(a.id));
     seenApprovalIds=new Set(state.approvals.map(a=>a.id));
-    if (fresh) {selectedId=fresh.projectId;setExpanded(true);}
+    if (fresh) {selectedId=fresh.projectId;setExpanded(true,true);}
     const freshQuestion=state.questions.find(q=>!seenQuestionIds.has(q.id));
     seenQuestionIds=new Set(state.questions.map(q=>q.id));
-    if (freshQuestion && !fresh) {selectedId=freshQuestion.projectId;setExpanded(true);}
+    if (freshQuestion && !fresh) {selectedId=freshQuestion.projectId;setExpanded(true,true);}
     render();
   }
   async function decide(decision) {
@@ -616,7 +637,7 @@
   let dragging=false;
   let pressedAt=null;
   const pet=$('character-wrap');
-  pet.addEventListener('dblclick', () => { host?.revealEdge?.(); setExpanded(true); render(); });
+  pet.addEventListener('dblclick', event => { if (event.ctrlKey) return; host?.revealEdge?.(); setExpanded(true); render(); });
   // Moving between the peeking pet and what it shows (across the small gap) never counts as leaving.
   const PEEK_PARTS = '#character-wrap, #panel, #summary';
   const peekEnter = () => {
@@ -642,7 +663,8 @@
   };
   // No pointer capture: the window stays under the cursor anyway, and a capture that outlives a
   // lost pointerup would swallow every later click on the buttons.
-  pet.addEventListener('pointerdown',event=>{if(event.button!==0)return;if(landingActive){stopLanding();render();}if(!host){pressedAt={x:event.screenX,y:event.screenY,t:Date.now()};return;}dragging=true;pressedAt={x:event.screenX,y:event.screenY,t:Date.now()};host.dragStart();});
+  // Ctrl + left button brings DSH's window forward instead of starting a drag.
+  pet.addEventListener('pointerdown',event=>{if(event.button!==0)return;if(event.ctrlKey){event.preventDefault();host?.openDsh?.();return;}if(landingActive){stopLanding();render();}if(!host){pressedAt={x:event.screenX,y:event.screenY,t:Date.now()};return;}dragging=true;pressedAt={x:event.screenX,y:event.screenY,t:Date.now()};host.dragStart();});
   // Demo page (no host): no dragging, but a click still toggles the composer icon.
   pet.addEventListener('pointerup',event=>{if(host||!pressedAt)return;const from=pressedAt;pressedAt=null;if(Math.hypot(event.screenX-from.x,event.screenY-from.y)<4)petClicked();});
   window.addEventListener('pointermove',event=>{if(dragging&&event.buttons===0)endDrag(event);});

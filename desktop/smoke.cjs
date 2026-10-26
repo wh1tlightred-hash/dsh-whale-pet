@@ -31,6 +31,11 @@ const assert = (value, message) => { if (!value) throw new Error(message); };
   await wait(200);
   const complete = await win.webContents.executeJavaScript(`({notice: !document.getElementById('notice').hidden, text: document.getElementById('notice-title').textContent})`);
   assert(complete.notice && complete.text.includes('完成'), 'completion notice missing');
+  // The list opened by the approval folds away once it is answered; open it again to measure it.
+  const foldedAfterAnswer = await win.webContents.executeJavaScript("!document.getElementById('app').classList.contains('expanded') && document.getElementById('panel').hidden");
+  assert(foldedAfterAnswer, 'the task list opened for an approval should fold away once it is answered');
+  await win.webContents.executeJavaScript("document.getElementById('summary').click()");
+  await wait(300);
   const twoProjects = { height: await panelHeight(), bounds: win.getBounds() };
   assert(twoProjects.height < panelWithApproval && sameWindow(twoProjects.bounds), 'the panel should shrink once the approval is gone, without resizing the window');
   const many = Array.from({ length: 7 }, (_, i) => ({ id: `many-${i}`, name: `项目 ${i + 1} · 任务`, status: i ? 'thinking' : 'working', detail: '思考中' }));

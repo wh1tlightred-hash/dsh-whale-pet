@@ -3,7 +3,9 @@ const net = require('node:net');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const { spawn } = require('node:child_process');
 const { sideAt, dockBounds, hintAt, clampPetBounds } = require('./edge.cjs');
+const { dshLaunch } = require('./open-dsh.cjs');
 const ROOT = path.resolve(__dirname, '..');
 const LOCAL = path.join(ROOT, '.local');
 fs.mkdirSync(LOCAL, { recursive: true });
@@ -309,6 +311,29 @@ app.whenReady().then(async () => {
   cursorWatch.unref?.();
   ipcMain.on('whale:top', (e, value) => { if (own(e)) setTop(value); });
   ipcMain.on('whale:hide', e => { if (own(e)) requestHide(); });
+  const openDshWindow = () => {
+    const launch = dshLaunch();
+    if (!launch) { console.log('[whale-pet] open DSH: executable unknown'); return; }
+    try {
+      const child = spawn(launch.command, [], { env: launch.env, detached: true, stdio: 'ignore' });
+      child.on('error', error => console.log('[whale-pet] open DSH failed:', error.message));
+      child.unref();
+    } catch (error) { console.log('[whale-pet] open DSH failed:', error.message); }
+  };
+  ipcMain.on('whale:open-dsh', e => { if (own(e)) openDshWindow(); });
+  ipcMain.handle('whale:open-session', async (e, sessionId) => {
+    if (!own(e) || !socket?.writable) return { ok: false, error: 'dsh 连接已断开' };
+    if (typeof sessionId !== 'string' || !state.projects.some(project => project.id === sessionId))
+      return { ok: false, error: '所选对话已不在桌宠中，请重新选择' };
+    // Raise DSH while this user gesture still owns the foreground; the Host switches its conversation.
+    openDshWindow();
+    return new Promise(resolve => {
+      const requestId = crypto.randomUUID();
+      const timer = setTimeout(() => { pending.delete(requestId); resolve({ ok: false, error: '打开对话超时，请稍后重试' }); }, 8000);
+      pending.set(requestId, { resolve, timer });
+      socket.write(JSON.stringify({ type: 'open-session', sessionId, requestId }) + '\n');
+    });
+  });
   ipcMain.handle('whale:answer', async (e, id, answers) => {
     if (!own(e) || !socket?.writable || !(state.questions ?? []).some(q => q.id === id) || !Array.isArray(answers)) return { ok: false, error: '问题已回答或连接已断开' };
     return new Promise(resolve => {

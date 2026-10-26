@@ -13,6 +13,7 @@
     "lib",
     "desktop/main.cjs",
     "desktop/edge.cjs",
+    "desktop/open-dsh.cjs",
     "desktop/preload.cjs",
     "ui/index.html",
     "ui/app.js",
@@ -36,7 +37,8 @@
       "platform": "web",
       "inject": [
         "@deepseek-ai/dsh-client-locale",
-        "@deepseek-ai/dsh-client-ui-settings"
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-workspace"
       ]
     }
   },
